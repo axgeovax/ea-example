@@ -1,0 +1,135 @@
+﻿{
+  "platform"    :"mt5",
+  "program_type":"expert",
+  "copyright"   :"Alexy Hernández",
+  "link"        :"https:\/\/github.com\/axgeovax",
+  "version"     :"1.0",
+  "description" :"An institutional multi-currency Expert Advisor for MetaTrader 5 that integrates Smart Money Concepts (SMC), hybrid AI (ONNX + KNN 6D), and global risk management to trade a diversified portfolio automatically with a 1:3 risk-to-reward target.",
+  "icon"        :"IconProject.ico",
+  "cpu_architecture" :"0",
+  "optimize"    :"1",
+  "fpzerocheck" :"1",
+  "tester_no_cache":"0",
+  "tester_everytick_calculate":"0",
+  "unicode_character_set":"0",
+  "static_libraries":"0",
+
+  "files":
+  [
+    {
+      "path":"Arion.mq5",
+      "compile":true,
+      "relative_to_project":true
+    },
+    {
+      "path":"RiskManager.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"SmartMoney.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"Executor.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"OnnxPredictor.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"KnnClassifier.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"SignalFilter.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"CorrelationEngine.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"GlobalRiskManager.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"NewsFilter.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"Logger.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"Dashboard.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"Metrics.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"AutoTrainManager.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"MQL5\\Include\\Trade\\Trade.mqh",
+      "compile":false,
+      "relative_to_project":false
+    },
+    {
+      "path":"MQL5\\Include\\Object.mqh",
+      "compile":false,
+      "relative_to_project":false
+    },
+    {
+      "path":"MQL5\\Include\\StdLibErr.mqh",
+      "compile":false,
+      "relative_to_project":false
+    },
+    {
+      "path":"MQL5\\Include\\Trade\\OrderInfo.mqh",
+      "compile":false,
+      "relative_to_project":false
+    },
+    {
+      "path":"MQL5\\Include\\Trade\\HistoryOrderInfo.mqh",
+      "compile":false,
+      "relative_to_project":false
+    },
+    {
+      "path":"MQL5\\Include\\Trade\\PositionInfo.mqh",
+      "compile":false,
+      "relative_to_project":false
+    },
+    {
+      "path":"MQL5\\Include\\Trade\\DealInfo.mqh",
+      "compile":false,
+      "relative_to_project":false
+    }
+  ],
+
+  "resources":
+  [
+    {
+      "type":"binary",
+      "path":"ArionIntelligence.onnx",
+      "name":"",
+      "relative_to_project":true
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+# ARION BLACK HORSE - GITIGNORE
+# Autor: Alexy Hernandez - Todos los derechos reservados
+# Versión: 1.0.0
+
+# Archivos compilados
+*.ex5
+*.ex4
+
+# Archivos de proyecto de MetaEditor
+# *.mqproj (COMENTADO - necesario para MetaEditor)
+*.mqh.cache
+
+# Archivos temporales
+*~
+*.tmp
+*.bak
+*.swp
+
+# Archivos de configuración local
+.config.local.json
+.devin/
+
+# Logs
+*.log
+
+# Archivos de datos históricos (opcionales)
+*.hst
+*.fxt
+
+# Archivos de backtesting
+*.htm
+*.xml
+Reports/
+Tester/
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Archivos de backups
+*_backup.*
+*_old.*
+*_v*
+
+# Documentación de desarrollo temporal
+TODO.md
+NOTES.md
+DRAFT.md
+
+# Archivos de optimización genetic
+optimization_cache/
