@@ -120,6 +120,21 @@
       "path":"MQL5\\Include\\Trade\\DealInfo.mqh",
       "compile":false,
       "relative_to_project":false
+    },
+    {
+      "path":"NormalizationEngine.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"ModelMonitor.mqh",
+      "compile":false,
+      "relative_to_project":true
+    },
+    {
+      "path":"TrainingLabelGenerator.mqh",
+      "compile":false,
+      "relative_to_project":true
     }
   ],
 

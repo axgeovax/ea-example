@@ -1,12 +1,13 @@
 ﻿//+------------------------------------------------------------------+
 //|                                                 RiskManager.mqh  |
-//|                        Arion - Gestión de Riesgo                 |
-//|                        Autor: Alexy Hernández                    |
-//|                        Versión: 1.0                              |
-//|        Copyright (c) 2025 Alexy Hernández. Todos los derechos    |
+//|                        Arion - Gestion de Riesgo                 |
+//|                        Autor: Alexy Hernandez                    |
+//|                        Version: 1.0                              |
+//|        Copyright (c) 2025 Alexy Hernandez. Todos los derechos    |
 //|        reservados.                                               |
+//|   * CORREGIDO: Limite de lote maximo configurable (InpMaxLot)    |
 //+------------------------------------------------------------------+
-#property copyright "Copyright (c) 2025 Alexy Hernández. Todos los derechos reservados."
+#property copyright "Copyright (c) 2025 Alexy Hernandez. Todos los derechos reservados."
 #property link      "https://github.com/axgeovax"
 #property version   "1.0"
 #property strict
@@ -17,8 +18,7 @@
 #define __RISKMANAGER_MQH__
 
 //+------------------------------------------------------------------+
-//| Clase RiskManager: calcula el tamaño de lote óptimo basado en     |
-//| riesgo porcentual y ajusta por correlación con otras posiciones.  |
+//|                                                                  |
 //+------------------------------------------------------------------+
 class RiskManager
   {
@@ -33,46 +33,25 @@ private:
    double               m_pointValuePerLot;
    CorrelationEngine*   m_corrEngine;
 
-   //+------------------------------------------------------------------+
-   //| Carga las propiedades del símbolo desde el servidor.               |
-   //+------------------------------------------------------------------+
-   bool                 LoadProperties();
+   double               m_maxLot;        // Limite maximo de lote por operacion
 
-   //+------------------------------------------------------------------+
-   //| Calcula el factor de reducción por correlación con otras posiciones.|
-   //+------------------------------------------------------------------+
+   bool                 LoadProperties();
    double               CalculateReductionFactor();
 
 public:
-   //+------------------------------------------------------------------+
-   //| Constructor: inicializa el gestor para un símbolo.                 |
-   //+------------------------------------------------------------------+
                      RiskManager(string symbol = NULL, CorrelationEngine* corr = NULL);
                     ~RiskManager() { }
 
-   //+------------------------------------------------------------------+
-   //| Actualiza las propiedades del símbolo (apalancamiento, etc.).      |
-   //+------------------------------------------------------------------+
    bool                 UpdateProperties() { return LoadProperties(); }
-
-   //+------------------------------------------------------------------+
-   //| Calcula el lote normalizado según riesgo, SL y correlación.       |
-   //+------------------------------------------------------------------+
    double               CalculateLots(double riskPercentage, double slDistancePoints);
-
-   //+------------------------------------------------------------------+
-   //| Verifica que un lote cumpla con los límites del bróker.           |
-   //+------------------------------------------------------------------+
    bool                 ValidateLot(double lot);
-
-   //+------------------------------------------------------------------+
-   //| Asigna el motor de correlación externo.                           |
-   //+------------------------------------------------------------------+
    void                 SetCorrelationEngine(CorrelationEngine* corr) { m_corrEngine = corr; }
+   void                 SetMaxLot(double maxLot) { m_maxLot = MathMax(0.0, maxLot); }
+   double               GetMaxLot() const { return m_maxLot; }
   };
 
 //+------------------------------------------------------------------+
-//| Constructor                                                        |
+//|                                                                  |
 //+------------------------------------------------------------------+
 RiskManager::RiskManager(string symbol, CorrelationEngine* corr)
   {
@@ -81,11 +60,12 @@ RiskManager::RiskManager(string symbol, CorrelationEngine* corr)
    m_volumeStep = m_volumeMin = m_volumeMax = 0.0;
    m_tickValue = m_tickSize = m_pointValuePerLot = 0.0;
    m_corrEngine = corr;
+   m_maxLot = 0.0;   // 0 = sin limite
    LoadProperties();
   }
 
 //+------------------------------------------------------------------+
-//| Cargar propiedades del símbolo                                      |
+//|                                                                  |
 //+------------------------------------------------------------------+
 bool RiskManager::LoadProperties()
   {
@@ -105,7 +85,10 @@ bool RiskManager::LoadProperties()
    if(!SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE, m_tickSize) || m_tickSize <= 0.0)
      { Print("Error [RiskManager]: SYMBOL_TRADE_TICK_SIZE not available for ", m_symbol); return false; }
 
-   m_pointValuePerLot = m_tickValue / m_tickSize;
+   double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+   if(point <= 0.0)
+      point = m_tickSize;
+   m_pointValuePerLot = m_tickValue * (point / m_tickSize);
 
    int digits = 0;
    double step = m_volumeStep;
@@ -119,7 +102,7 @@ bool RiskManager::LoadProperties()
   }
 
 //+------------------------------------------------------------------+
-//| Calcular factor de reducción por correlación (adaptativo)         |
+//|                                                                  |
 //+------------------------------------------------------------------+
 double RiskManager::CalculateReductionFactor()
   {
@@ -137,16 +120,15 @@ double RiskManager::CalculateReductionFactor()
       if(sym == m_symbol)
          continue;
 
-      double factor = m_corrEngine.GetAdaptiveReductionFactor(m_symbol, sym);
-      if(factor < minFactor)
-         minFactor = factor;
+      double currentFactor = m_corrEngine.GetAdaptiveReductionFactor(m_symbol, sym);
+      minFactor = MathMin(minFactor, currentFactor);
      }
 
    return minFactor;
   }
 
 //+------------------------------------------------------------------+
-//| Calcular lote                                                      |
+//|                                                                  |
 //+------------------------------------------------------------------+
 double RiskManager::CalculateLots(double riskPercentage, double slDistancePoints)
   {
@@ -155,25 +137,30 @@ double RiskManager::CalculateLots(double riskPercentage, double slDistancePoints
    if(m_pointValuePerLot <= 0.0)
      { Print("Error [RiskManager]: Symbol properties not initialized."); return 0.0; }
 
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   if(balance <= 0.0)
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity <= 0.0)
      {
-      Print("Error [RiskManager]: Invalid account balance");
+      Print("Error [RiskManager]: Invalid account equity");
       return 0.0;
      }
 
-   double riskCapital = balance * (riskPercentage / 100.0);
+   double riskCapital = equity * (riskPercentage / 100.0);
    double riskPerLot = slDistancePoints * m_pointValuePerLot;
    if(riskPerLot <= 0.0)
       return 0.0;
 
    double rawLot = riskCapital / riskPerLot;
-
    double factor = CalculateReductionFactor();
    rawLot *= factor;
 
-   double normalizedLot = MathFloor(rawLot / m_volumeStep) * m_volumeStep;
-   normalizedLot = NormalizeDouble(normalizedLot, m_volumeDigits);
+   double normalizedLot = NormalizeDouble(MathFloor(rawLot / m_volumeStep) * m_volumeStep, m_volumeDigits);
+
+// Aplicar limite maximo de lote si esta configurado
+   if(m_maxLot > 0.0 && normalizedLot > m_maxLot)
+     {
+      Print("⚠ Lote calculado (", normalizedLot, ") supera el maximo permitido (", m_maxLot, "). Ajustando.");
+      normalizedLot = m_maxLot;
+     }
 
    if(normalizedLot < m_volumeMin)
      {
@@ -185,20 +172,21 @@ double RiskManager::CalculateLots(double riskPercentage, double slDistancePoints
       Print("Warning [RiskManager]: Calculated lot exceeds max. Clamped to ", m_volumeMax);
       normalizedLot = m_volumeMax;
      }
-
    return normalizedLot;
   }
 
 //+------------------------------------------------------------------+
-//| Validar lote                                                       |
+//|                                                                  |
 //+------------------------------------------------------------------+
 bool RiskManager::ValidateLot(double lot)
   {
    if(m_volumeStep <= 0.0)
       return false;
-   double normalized = MathFloor(lot / m_volumeStep) * m_volumeStep;
-   normalized = NormalizeDouble(normalized, m_volumeDigits);
-   return (MathAbs(normalized - lot) < 1e-10) && (lot >= m_volumeMin) && (lot <= m_volumeMax);
+   double normalized = NormalizeDouble(MathFloor(lot / m_volumeStep) * m_volumeStep, m_volumeDigits);
+   bool stepOk = (MathAbs(normalized - lot) < 1e-10);
+   bool rangeOk = (lot >= m_volumeMin && lot <= m_volumeMax);
+   bool maxOk = (m_maxLot == 0.0 || lot <= m_maxLot);
+   return stepOk && rangeOk && maxOk;
   }
 
 #endif // __RISKMANAGER_MQH__

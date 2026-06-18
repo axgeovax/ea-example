@@ -1,26 +1,24 @@
 ﻿//+------------------------------------------------------------------+
 //|                                                  Executor.mqh    |
-//|                        Arion - Ejecución Asíncrona Avanzada      |
-//|   Llenado adaptativo, Slippage dinámico, Margen variable,        |
+//|                        Arion - Ejecucion Asincrona Avanzada      |
+//|   Llenado adaptativo, Slippage dinamico, Margen variable,        |
 //|   BE/Trailing por pips, Back‑off selectivo                       |
-//|                        Autor: Alexy Hernández                    |
-//|                        Versión: 1.0                              |
-//|        Copyright (c) 2025 Alexy Hernández. Todos los derechos    |
-//|        reservados.                                               |
+//|   * CORREGIDO: Slippage ampliado para activos volatiles.         |
+//|                        Autor: Alexy Hernandez                    |
+//|                        Version: 1.0                              |
 //+------------------------------------------------------------------+
-#property copyright "Copyright (c) 2025 Alexy Hernández. Todos los derechos reservados."
+#property copyright "Copyright (c) 2025 Alexy Hernandez. Todos los derechos reservados."
 #property link      "https://github.com/axgeovax"
 #property version   "1.0"
 #property strict
 
 #include <Trade\Trade.mqh>
+#include "NewsFilter.mqh"
+#include "Logger.mqh"
 
 #ifndef __EXECUTOR_MQH__
 #define __EXECUTOR_MQH__
 
-//+------------------------------------------------------------------+
-//| Estados posibles de una orden asíncrona                           |
-//+------------------------------------------------------------------+
 enum ENUM_ARION_ORDER_STATE
   {
    ARION_ORDER_STATE_NONE,
@@ -29,8 +27,15 @@ enum ENUM_ARION_ORDER_STATE
    ARION_ORDER_STATE_ERROR
   };
 
+struct PendingOrder
+  {
+   MqlTradeRequest   request;
+   datetime          attemptTime;
+   datetime          expiration;
+  };
+
 //+------------------------------------------------------------------+
-//| Clase Executor: gestión avanzada de órdenes                       |
+//|                                                                  |
 //+------------------------------------------------------------------+
 class Executor
   {
@@ -52,52 +57,41 @@ private:
    int                     m_asyncTimeout;
    int                     m_consecutiveTimeouts;
 
-   // --- Variables para BE y Trailing adaptativo ---
-   double                  m_lastBEPrice;       // precio al último BE
-   double                  m_lastTrailPrice;    // precio al último ajuste trailing
-   double                  m_trailStepPips;     // paso mínimo (se adapta)
-   double                  m_trailDistancePips; // distancia base (se adapta)
+   double                  m_lastBEPrice;
+   double                  m_lastTrailPrice;
+   double                  m_trailStepPips;
+   double                  m_trailDistancePips;
 
-   // --- Indicador ATR M1 para slippage dinámico y margen ---
    int                     m_handleATR_M1;
+   int                     m_minPipsDisplacement;
 
-   //+------------------------------------------------------------------+
-   //| Obtiene el precio actual (Ask o Bid) según el tipo de orden.       |
-   //+------------------------------------------------------------------+
+   NewsFilter*             m_newsFilter;
+   bool                    m_reduceLotDuringNews;
+   PendingOrder            m_pendingOrders[];
+   int                     m_pendingCount;
+   int                     m_pendingExpirationSeconds;
+
+   double                  m_spreadBuffer[20];
+   int                     m_spreadBufferIdx;
+   int                     m_spreadBufferCount;
+   double                  m_avgSpread;
+
+   double                  m_maxSafetyFactor;
+
    double                  GetUpdatedPrice(ENUM_ORDER_TYPE type);
-
-   //+------------------------------------------------------------------+
-   //| Verifica si el símbolo está temporalmente bloqueado.               |
-   //+------------------------------------------------------------------+
    bool                    IsBlocked();
-
-   //+------------------------------------------------------------------+
-   //| Bloquea el símbolo durante una cantidad de segundos.               |
-   //+------------------------------------------------------------------+
    void                    BlockAsset(int seconds = 60);
-
-   //+------------------------------------------------------------------+
-   //| Calcula el slippage dinámico en puntos (ATR M1).                   |
-   //+------------------------------------------------------------------+
    int                     CalculateDynamicSlippage();
-
-   //+------------------------------------------------------------------+
-   //| Safety margin factor: entre 1.2 y 2.0 según exposición/volatilidad|
-   //+------------------------------------------------------------------+
    double                  GetSafetyMarginFactor();
-
-   //+------------------------------------------------------------------+
-   //| Obtiene el ATR M1 actual del símbolo                               |
-   //+------------------------------------------------------------------+
    double                  GetATR_M1();
-
-   //+------------------------------------------------------------------+
-   //| Lógica de alternancia de filling para reintentos                   |
-   //+------------------------------------------------------------------+
    ENUM_ORDER_TYPE_FILLING GetFillingMode();
 
+   void                    UpdateSpreadAverage();
+   bool                    IsNewsLockoutActive();
+   void                    RetryPendingOrders();
+
 public:
-                     Executor(string symbol = NULL, long magicBase = 202400);
+                     Executor(string symbol = NULL, long magicBase = 202400, double maxSafetyFactor = 2.0);
                     ~Executor();
 
    bool                    Initialize();
@@ -108,18 +102,27 @@ public:
    void                    ManageBreakeven(double activationRatio = 1.0, double extraPoints = 5.0);
    void                    ManageTrailingStop(double trailStartRatio = 1.5,
          double trailDistancePips = 50.0,
-         double trailStepPips = 5.0);
+         double trailStepPips = 5.0,
+         double trailATRMultiplier = 0.0);
    void                    ClearLocks();
    void                    SetAsyncTimeout(int seconds) { m_asyncTimeout = (seconds > 0) ? seconds : 30; }
    string                  GetSymbol() const { return m_symbol; }
    ENUM_ARION_ORDER_STATE  GetState() const { return m_orderState; }
    bool                    HasOrderInFlight() const { return m_orderInFlight; }
+
+   double                  GetCurrentATR() { return GetATR_M1(); }
+   void                    SetMinPipsDisplacement(int pips) { m_minPipsDisplacement = pips; }
+
+   void                    SetNewsFilter(NewsFilter* filter) { m_newsFilter = filter; }
+   void                    SetReduceLotDuringNews(bool enable) { m_reduceLotDuringNews = enable; }
+
+   void                    RetryClosedMarketOrders() { RetryPendingOrders(); }
   };
 
 //+------------------------------------------------------------------+
-//| Constructor                                                        |
+//|                                                                  |
 //+------------------------------------------------------------------+
-Executor::Executor(string symbol, long magicBase)
+Executor::Executor(string symbol, long magicBase, double maxSafetyFactor = 2.0)
   {
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_maxRetries = 3;
@@ -140,10 +143,20 @@ Executor::Executor(string symbol, long magicBase)
    m_trailStepPips = 5.0;
    m_trailDistancePips = 50.0;
    m_handleATR_M1 = INVALID_HANDLE;
+   m_minPipsDisplacement = 2;
+   m_newsFilter = NULL;
+   m_reduceLotDuringNews = false;
+   ArrayResize(m_pendingOrders, 0);
+   m_pendingCount = 0;
+   m_pendingExpirationSeconds = 86400;
+   ArrayInitialize(m_spreadBuffer, 0.0);
+   m_spreadBufferIdx = 0;
+   m_spreadBufferCount = 0;
+   m_maxSafetyFactor = maxSafetyFactor;
   }
 
 //+------------------------------------------------------------------+
-//| Destructor                                                        |
+//|                                                                  |
 //+------------------------------------------------------------------+
 Executor::~Executor()
   {
@@ -152,7 +165,7 @@ Executor::~Executor()
   }
 
 //+------------------------------------------------------------------+
-//| Inicializar                                                        |
+//|                                                                  |
 //+------------------------------------------------------------------+
 bool Executor::Initialize()
   {
@@ -166,7 +179,34 @@ bool Executor::Initialize()
   }
 
 //+------------------------------------------------------------------+
-//| Obtener precio actualizado                                         |
+//|                                                                  |
+//+------------------------------------------------------------------+
+void Executor::UpdateSpreadAverage()
+  {
+   long spread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD);
+   m_spreadBuffer[m_spreadBufferIdx] = (double)spread;
+   m_spreadBufferIdx = (m_spreadBufferIdx + 1) % 20;
+   if(m_spreadBufferCount < 20)
+      m_spreadBufferCount++;
+   double sum = 0.0;
+   for(int i = 0; i < m_spreadBufferCount; i++)
+      sum += m_spreadBuffer[i];
+   m_avgSpread = sum / m_spreadBufferCount;
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool Executor::IsNewsLockoutActive()
+  {
+   if(m_newsFilter == NULL)
+      return false;
+   double dummyFactor;
+   return m_newsFilter.IsLockoutPeriod(m_symbol, dummyFactor);
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
 //+------------------------------------------------------------------+
 double Executor::GetUpdatedPrice(ENUM_ORDER_TYPE type)
   {
@@ -175,7 +215,7 @@ double Executor::GetUpdatedPrice(ENUM_ORDER_TYPE type)
   }
 
 //+------------------------------------------------------------------+
-//| Verificar bloqueo                                                  |
+//|                                                                  |
 //+------------------------------------------------------------------+
 bool Executor::IsBlocked()
   {
@@ -185,7 +225,6 @@ bool Executor::IsBlocked()
         {
          if(TimeCurrent() < m_blockTime[i])
             return true;
-         // Eliminar bloqueo expirado
          for(int j = i; j < m_totalBlocked - 1; j++)
            {
             m_blockedAssets[j] = m_blockedAssets[j+1];
@@ -201,7 +240,7 @@ bool Executor::IsBlocked()
   }
 
 //+------------------------------------------------------------------+
-//| Bloquear activo                                                    |
+//|                                                                  |
 //+------------------------------------------------------------------+
 void Executor::BlockAsset(int seconds)
   {
@@ -212,11 +251,10 @@ void Executor::BlockAsset(int seconds)
    m_blockedAssets[m_totalBlocked] = m_symbol;
    m_blockTime[m_totalBlocked] = TimeCurrent() + seconds;
    m_totalBlocked++;
-   Print("⚠ [Executor] Asset ", m_symbol, " blocked for ", seconds, " seconds.");
   }
 
 //+------------------------------------------------------------------+
-//| Liberar bloqueos y timeouts (back‑off progresivo)                  |
+//|                                                                  |
 //+------------------------------------------------------------------+
 void Executor::ClearLocks()
   {
@@ -242,42 +280,88 @@ void Executor::ClearLocks()
       m_orderInFlight = false;
       m_orderState = ARION_ORDER_STATE_ERROR;
       m_currentRetries = 0;
-      // Bloqueo exponencial: 60 * 2^(timeouts-1), máx 5 min
       int seconds = 60 * MathMin(1 << MathMin(m_consecutiveTimeouts-1, 3), 5);
       BlockAsset(seconds);
+     }
+
+   RetryPendingOrders();
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void Executor::RetryPendingOrders()
+  {
+   if(m_pendingCount == 0)
+      return;
+
+   datetime now = TimeCurrent();
+   ENUM_SYMBOL_TRADE_MODE tradeMode = (ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(m_symbol, SYMBOL_TRADE_MODE);
+   bool marketOpen = (tradeMode == SYMBOL_TRADE_MODE_FULL ||
+                      tradeMode == SYMBOL_TRADE_MODE_LONGONLY ||
+                      tradeMode == SYMBOL_TRADE_MODE_SHORTONLY);
+
+   for(int i = m_pendingCount - 1; i >= 0; i--)
+     {
+      if(now > m_pendingOrders[i].expiration)
+        {
+         for(int j = i; j < m_pendingCount - 1; j++)
+            m_pendingOrders[j] = m_pendingOrders[j+1];
+         m_pendingCount--;
+         ArrayResize(m_pendingOrders, m_pendingCount);
+         continue;
+        }
+
+      if(!marketOpen)
+         continue;
+
+      MqlTradeResult result;
+      if(OrderSendAsync(m_pendingOrders[i].request, result))
+        {
+         for(int j = i; j < m_pendingCount - 1; j++)
+            m_pendingOrders[j] = m_pendingOrders[j+1];
+         m_pendingCount--;
+         ArrayResize(m_pendingOrders, m_pendingCount);
+        }
+      else
+        {
+         if(result.retcode != TRADE_RETCODE_MARKET_CLOSED)
+           {
+            for(int j = i; j < m_pendingCount - 1; j++)
+               m_pendingOrders[j] = m_pendingOrders[j+1];
+            m_pendingCount--;
+            ArrayResize(m_pendingOrders, m_pendingCount);
+           }
+        }
      }
   }
 
 //+------------------------------------------------------------------+
-//| Calcular slippage dinámico basado en ATR M1                        |
+//|                                                                  |
 //+------------------------------------------------------------------+
 int Executor::CalculateDynamicSlippage()
   {
    double atr = GetATR_M1();
    if(atr <= 0)
-      return 30; // fallback
-
+      return 30;
    double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
    if(point <= 0)
       return 30;
-
-// Slippage = 30% del ATR en puntos, pero mínimo 10 y máximo 100
-   int slip = (int)(0.3 * atr / point);
+   int slip = (int)(0.5 * atr / point);   // factor 0.5 en lugar de 0.3 para cubrir mas volatilidad
    if(slip < 10)
       slip = 10;
-   if(slip > 100)
-      slip = 100;
+   if(slip > 200)
+      slip = 200;             // ampliado para activos volatiles como XAU
    return slip;
   }
 
 //+------------------------------------------------------------------+
-//| Obtener ATR M1 actual                                             |
+//|                                                                  |
 //+------------------------------------------------------------------+
 double Executor::GetATR_M1()
   {
    if(m_handleATR_M1 == INVALID_HANDLE)
       m_handleATR_M1 = iATR(m_symbol, PERIOD_M1, 14);
-
    if(m_handleATR_M1 != INVALID_HANDLE)
      {
       double buf[1];
@@ -288,13 +372,11 @@ double Executor::GetATR_M1()
   }
 
 //+------------------------------------------------------------------+
-//| Safety margin factor adaptativo                                    |
+//|                                                                  |
 //+------------------------------------------------------------------+
 double Executor::GetSafetyMarginFactor()
   {
    double base = 1.2;
-
-// A mayor volatilidad, más margen requerido
    double atr = GetATR_M1();
    double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
    if(atr > 0 && point > 0)
@@ -306,26 +388,20 @@ double Executor::GetSafetyMarginFactor()
          if(atrPoints > 20)
             base += 0.2;
      }
-
-// Exposición: si hay más de 5 posiciones totales, incrementar
    if(PositionsTotal() > 5)
       base += 0.2;
-
-// Margen libre disponible: si es menos del 200% del margen requerido, aumentar
    double marginFree = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double marginUsed = AccountInfoDouble(ACCOUNT_MARGIN);
    if(marginFree > 0 && marginUsed > 0 && marginFree < marginUsed * 2)
       base += 0.3;
-
-   return MathMin(base, 2.5);
+   return MathMin(base, m_maxSafetyFactor);
   }
 
 //+------------------------------------------------------------------+
-//| Modo de llenado según el número de reintento                       |
+//|                                                                  |
 //+------------------------------------------------------------------+
 ENUM_ORDER_TYPE_FILLING Executor::GetFillingMode()
   {
-// Alternar: primer intento FOK, luego IOC, luego RETURN
    if(m_currentRetries == 0)
       return ORDER_FILLING_FOK;
    else
@@ -336,10 +412,9 @@ ENUM_ORDER_TYPE_FILLING Executor::GetFillingMode()
   }
 
 //+------------------------------------------------------------------+
-//| Enviar orden de mercado asíncrona                                  |
+//|                                                                  |
 //+------------------------------------------------------------------+
-bool Executor::SendMarketOrder(ENUM_ORDER_TYPE type, double lot,
-                               double sl, double tp, string comment)
+bool Executor::SendMarketOrder(ENUM_ORDER_TYPE type, double lot, double sl, double tp, string comment)
   {
    if(IsBlocked())
      {
@@ -354,22 +429,22 @@ bool Executor::SendMarketOrder(ENUM_ORDER_TYPE type, double lot,
       return false;
      }
 
-// Verificar margen con factor adaptativo
+   if(m_reduceLotDuringNews && IsNewsLockoutActive())
+     {
+      lot *= 0.5;
+     }
+
    double marginFree = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    double marginReq = 0.0;
    double price = GetUpdatedPrice(type);
    if(price <= 0.0)
       return false;
    if(!OrderCalcMargin(type, m_symbol, lot, price, marginReq))
-     {
-      Print("Error [Executor]: Could not calculate margin.");
-      return false;
-     }
-
+     { Print("Error [Executor]: Could not calculate margin."); return false; }
    double safetyFactor = GetSafetyMarginFactor();
    if(marginFree < marginReq * safetyFactor)
      {
-      Print("Error [Executor]: Insufficient margin (Free=", marginFree, " Required=", marginReq, " SafetyFactor=", safetyFactor, ")");
+      Print("Error [Executor]: Insufficient margin");
       BlockAsset(300);
       return false;
      }
@@ -383,10 +458,10 @@ bool Executor::SendMarketOrder(ENUM_ORDER_TYPE type, double lot,
    request.symbol    = m_symbol;
    request.volume    = lot;
    request.type      = type;
-   request.deviation = CalculateDynamicSlippage();  // slippage dinámico
+   request.deviation = CalculateDynamicSlippage();
    request.magic     = m_magicNumber;
    request.comment   = comment;
-   request.type_filling = GetFillingMode();        // llenado adaptativo
+   request.type_filling = GetFillingMode();
    request.price     = price;
 
    double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
@@ -415,7 +490,7 @@ bool Executor::SendMarketOrder(ENUM_ORDER_TYPE type, double lot,
   }
 
 //+------------------------------------------------------------------+
-//| Procesar respuesta del bróker (back‑off selectivo)                 |
+//|                                                                  |
 //+------------------------------------------------------------------+
 void Executor::ProcessTransaction(const MqlTradeTransaction& trans,
                                   const MqlTradeRequest& request,
@@ -428,16 +503,14 @@ void Executor::ProcessTransaction(const MqlTradeTransaction& trans,
 
    switch(result.retcode)
      {
-      // --- Éxito ---
       case TRADE_RETCODE_DONE:
       case TRADE_RETCODE_DONE_PARTIAL:
          m_orderInFlight = false;
          m_orderState = ARION_ORDER_STATE_FILLED;
          m_consecutiveTimeouts = 0;
-         Print("✅ Async order executed on ", m_symbol, " ticket ", result.order);
+         Logger::LogTrade(m_symbol, "OPEN", result.order, result.price, result.volume, request.sl, request.tp);
          break;
 
-      // --- Reintento inmediato (ajustar precio y filling) ---
       case TRADE_RETCODE_REQUOTE:
       case TRADE_RETCODE_PRICE_CHANGED:
       case TRADE_RETCODE_PRICE_OFF:
@@ -456,11 +529,9 @@ void Executor::ProcessTransaction(const MqlTradeTransaction& trans,
                MqlTradeResult  newRes;
                newReq.price = newPrice;
                newReq.deviation = CalculateDynamicSlippage();
-               newReq.type_filling = GetFillingMode(); // alternar filling
+               newReq.type_filling = GetFillingMode();
                if(OrderSendAsync(newReq, newRes))
-                 {
                   m_sendTime = TimeCurrent();
-                 }
                else
                  {
                   m_orderInFlight = false;
@@ -471,7 +542,6 @@ void Executor::ProcessTransaction(const MqlTradeTransaction& trans,
            }
          break;
 
-      // --- Errores temporales (servidor) ---
       case TRADE_RETCODE_TIMEOUT:
       case TRADE_RETCODE_CONNECTION:
          if(++m_currentRetries < m_maxRetries)
@@ -497,30 +567,34 @@ void Executor::ProcessTransaction(const MqlTradeTransaction& trans,
            }
          break;
 
-      // --- Errores fatales: bloqueo largo exponencial ---
       case TRADE_RETCODE_MARKET_CLOSED:
-      case TRADE_RETCODE_TRADE_DISABLED:
+         if(m_pendingCount < 5)
+           {
+            ArrayResize(m_pendingOrders, m_pendingCount + 1);
+            m_pendingOrders[m_pendingCount].request = request;
+            m_pendingOrders[m_pendingCount].attemptTime = TimeCurrent();
+            m_pendingOrders[m_pendingCount].expiration  = TimeCurrent() + m_pendingExpirationSeconds;
+            m_pendingCount++;
+           }
+         m_orderInFlight = false;
+         m_orderState = ARION_ORDER_STATE_ERROR;
+         break;
+
       case TRADE_RETCODE_FROZEN:
       case TRADE_RETCODE_INVALID_FILL:
       case TRADE_RETCODE_LIMIT_VOLUME:
       case TRADE_RETCODE_NO_MONEY:
          m_orderInFlight = false;
          m_orderState = ARION_ORDER_STATE_ERROR;
-           {
-            int seconds = 60 * MathMin(1 << MathMin(m_consecutiveTimeouts, 3), 5);
-            BlockAsset(seconds);
-           }
+         BlockAsset(60 * MathMin(1 << MathMin(m_consecutiveTimeouts, 3), 5));
          break;
 
-      // --- Stops inválidos ---
       case TRADE_RETCODE_INVALID_STOPS:
          m_orderInFlight = false;
          m_orderState = ARION_ORDER_STATE_ERROR;
-         Print("Error [Executor] Invalid stops on ", m_symbol, ". Check SL/TP.");
          BlockAsset(120);
          break;
 
-      // --- Otros: error genérico ---
       default:
          if(++m_currentRetries >= m_maxRetries)
            {
@@ -533,14 +607,22 @@ void Executor::ProcessTransaction(const MqlTradeTransaction& trans,
   }
 
 //+------------------------------------------------------------------+
-//| Gestionar breakeven (basado en pips de movimiento)                 |
+//|                                                                  |
 //+------------------------------------------------------------------+
 void Executor::ManageBreakeven(double activationRatio, double extraPoints)
   {
+   UpdateSpreadAverage();
+
    double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
    long stopLevel = SymbolInfoInteger(m_symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double atrM1 = GetATR_M1();
+   if(atrM1 <= 0 || point <= 0)
+      return;
+
+   bool newsActive = IsNewsLockoutActive();
+   long currentSpread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD);
 
    int total = PositionsTotal();
    for(int i = total - 1; i >= 0; i--)
@@ -553,164 +635,132 @@ void Executor::ManageBreakeven(double activationRatio, double extraPoints)
       if(PositionGetInteger(POSITION_MAGIC) != m_magicNumber)
          continue;
 
-      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-      double openPrice  = PositionGetDouble(POSITION_PRICE_OPEN);
-      double originalSL = PositionGetDouble(POSITION_SL);
-      double originalTP = PositionGetDouble(POSITION_TP);
-      if(originalSL == 0)
-         continue;
-
-      double currentPrice = (posType == POSITION_TYPE_BUY) ? bid : ask;
-      double slDist = (posType == POSITION_TYPE_BUY) ? (openPrice - originalSL) / point
-                      : (originalSL - openPrice) / point;
-      if(slDist <= 0)
-         continue;
-
-      double profitPips = (posType == POSITION_TYPE_BUY) ? (currentPrice - openPrice) / point
-                          : (openPrice - currentPrice) / point;
-
-      // Verificar si ya hemos aplicado BE para este ticket
-      if(m_lastBEPrice != 0 && MathAbs(currentPrice - m_lastBEPrice) < point * InpMinPipsDisplacement)
-         continue; // no ha habido suficiente movimiento
-
-      if(profitPips >= slDist * activationRatio)
-        {
-         double newSL;
-         if(posType == POSITION_TYPE_BUY)
-            newSL = openPrice + extraPoints * point;
-         else
-            newSL = openPrice - extraPoints * point;
-
-         if((posType == POSITION_TYPE_BUY && newSL <= originalSL) ||
-            (posType == POSITION_TYPE_SELL && newSL >= originalSL))
-            continue;
-
-         double distanceToPrice = MathAbs(currentPrice - newSL) / point;
-         if(distanceToPrice < stopLevel)
-            continue;
-
-         if((posType == POSITION_TYPE_BUY && newSL >= currentPrice) ||
-            (posType == POSITION_TYPE_SELL && newSL <= currentPrice))
-            continue;
-
-         if(PositionSelectByTicket(ticket))
-           {
-            if(m_trade.PositionModify(ticket, newSL, originalTP))
-              {
-               Print("✔ Breakeven applied on ", m_symbol, " ticket ", ticket);
-               m_lastBEPrice = currentPrice;
-              }
-            else
-               Print("Error [Executor] modifying SL to BE: ", GetLastError());
-           }
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Gestionar trailing stop dinámico (adaptativo por momentum)        |
-//+------------------------------------------------------------------+
-void Executor::ManageTrailingStop(double trailStartRatio, double trailDistancePips, double trailStepPips)
-  {
-   double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
-   double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
-   long stopLevel = SymbolInfoInteger(m_symbol, SYMBOL_TRADE_STOPS_LEVEL);
-
-   int total = PositionsTotal();
-   for(int i = total - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket))
-         continue;
-      if(PositionGetString(POSITION_SYMBOL) != m_symbol)
-         continue;
-      if(PositionGetInteger(POSITION_MAGIC) != m_magicNumber)
+      if(newsActive && m_avgSpread > 0 && currentSpread > m_avgSpread * 1.5)
          continue;
 
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       double openPrice  = PositionGetDouble(POSITION_PRICE_OPEN);
       double originalSL = PositionGetDouble(POSITION_SL);
       double originalTP = PositionGetDouble(POSITION_TP);
-      if(originalSL == 0)
+      if(originalSL <= 0)
          continue;
 
-      double currentPrice = (posType == POSITION_TYPE_BUY) ? bid : ask;
-
-      // Ganancia en pips
-      double profitPips = (posType == POSITION_TYPE_BUY) ? (currentPrice - openPrice) / point
-                          : (openPrice - currentPrice) / point;
-      if(profitPips <= 0)
+      double profitPoints = (posType == POSITION_TYPE_BUY) ? (bid - openPrice) / point
+                            : (openPrice - ask) / point;
+      if(profitPoints <= 0)
          continue;
 
-      // SL inicial en pips
-      double slDist = (posType == POSITION_TYPE_BUY) ? (openPrice - originalSL) / point
-                      : (originalSL - openPrice) / point;
-
-      // Ajustar distancia y paso según momentum
-      double momentum = 0.0;
-      // Calculamos momentum simple con 5 barras M1
-      double closeArr[];
-      if(CopyClose(m_symbol, PERIOD_M1, 5, 1, closeArr) == 1)
-         momentum = (currentPrice - closeArr[0]) / point;
-
-      double dynamicTrailDist = trailDistancePips;
-      double dynamicTrailStep = trailStepPips;
-
-      if(momentum > 20)           // movimiento fuerte a favor
-        {
-         dynamicTrailDist = trailDistancePips * 0.7;
-         dynamicTrailStep = trailStepPips * 0.5;
-        }
-      else
-         if(momentum > 10)
-           {
-            dynamicTrailDist = trailDistancePips * 0.9;
-            dynamicTrailStep = trailStepPips * 0.8;
-           }
-      // si momentum es bajo, dejamos valores base
-
-      // Solo activar si la ganancia supera el ratio de inicio
-      if(profitPips < slDist * trailStartRatio)
+      double atrPoints = atrM1 / point;
+      if(profitPoints < activationRatio * atrPoints)
          continue;
 
-      double newSL;
-      if(posType == POSITION_TYPE_BUY)
-         newSL = currentPrice - dynamicTrailDist * point;
-      else
-         newSL = currentPrice + dynamicTrailDist * point;
+      double newSL = openPrice + (posType == POSITION_TYPE_BUY ? extraPoints * point : -extraPoints * point);
+      newSL = NormalizeDouble(newSL, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS));
 
-      // Mejorar SL solo si el nuevo es mejor que el actual
       if((posType == POSITION_TYPE_BUY && newSL <= originalSL) ||
          (posType == POSITION_TYPE_SELL && newSL >= originalSL))
          continue;
 
-      // Verificar movimiento mínimo para ajustar (paso adaptativo)
-      if(m_lastTrailPrice != 0)
-        {
-         double moveSinceLast = MathAbs(currentPrice - m_lastTrailPrice) / point;
-         if(moveSinceLast < dynamicTrailStep)
-            continue;
-        }
-
-      // Verificar stop level y lado correcto
+      double currentPrice = (posType == POSITION_TYPE_BUY) ? bid : ask;
       double distanceToPrice = MathAbs(currentPrice - newSL) / point;
       if(distanceToPrice < stopLevel)
-         continue;
-
-      if((posType == POSITION_TYPE_BUY && newSL >= currentPrice) ||
-         (posType == POSITION_TYPE_SELL && newSL <= currentPrice))
          continue;
 
       if(PositionSelectByTicket(ticket))
         {
          if(m_trade.PositionModify(ticket, newSL, originalTP))
-           {
-            Print("✔ Trailing SL updated on ", m_symbol, " ticket ", ticket, " SL=", DoubleToString(newSL, 5));
-            m_lastTrailPrice = currentPrice;
-           }
-         else
-            Print("Error [Executor] modifying SL to trailing: ", GetLastError());
+            m_lastBEPrice = currentPrice;
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void Executor::ManageTrailingStop(double trailStartRatio, double trailDistancePips, double trailStepPips, double trailATRMultiplier = 0.0)
+  {
+   UpdateSpreadAverage();
+
+   double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+   double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+   long stopLevel = SymbolInfoInteger(m_symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+   double atrM1 = GetATR_M1();
+   if(atrM1 <= 0 || point <= 0)
+      return;
+
+   bool newsActive = IsNewsLockoutActive();
+   long currentSpread = SymbolInfoInteger(m_symbol, SYMBOL_SPREAD);
+
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != m_symbol)
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC) != m_magicNumber)
+         continue;
+
+      if(newsActive && m_avgSpread > 0 && currentSpread > m_avgSpread * 1.5)
+         continue;
+
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double openPrice  = PositionGetDouble(POSITION_PRICE_OPEN);
+      double originalSL = PositionGetDouble(POSITION_SL);
+      double originalTP = PositionGetDouble(POSITION_TP);
+      if(originalSL <= 0)
+         continue;
+
+      double currentPrice = (posType == POSITION_TYPE_BUY) ? bid : ask;
+      double profitPoints = (posType == POSITION_TYPE_BUY) ? (currentPrice - openPrice) / point
+                            : (openPrice - currentPrice) / point;
+      if(profitPoints <= 0)
+         continue;
+
+      double atrPoints = atrM1 / point;
+      if(profitPoints < trailStartRatio * atrPoints)
+         continue;
+
+      // Dynamic trailing distance: use ATR if multiplier > 0, otherwise use fixed pips
+      double dynamicTrailDistance = (trailATRMultiplier > 0.0) ? atrPoints * trailATRMultiplier : trailDistancePips;
+
+      double newSL;
+      if(posType == POSITION_TYPE_BUY)
+         newSL = currentPrice - dynamicTrailDistance * point;
+      else
+         newSL = currentPrice + dynamicTrailDistance * point;
+      newSL = NormalizeDouble(newSL, digits);
+
+      if(posType == POSITION_TYPE_BUY)
+        {
+         if(newSL <= originalSL + trailStepPips * point)
+            continue;
+        }
+      else
+        {
+         if(newSL >= originalSL - trailStepPips * point)
+            continue;
+        }
+
+      if(m_lastTrailPrice != 0)
+        {
+         double moveSinceLast = MathAbs(currentPrice - m_lastTrailPrice) / point;
+         if(moveSinceLast < trailStepPips)
+            continue;
+        }
+
+      m_lastTrailPrice = currentPrice;
+
+      double distanceToPrice = MathAbs(currentPrice - newSL) / point;
+      if(distanceToPrice < stopLevel)
+         continue;
+
+      if(PositionSelectByTicket(ticket))
+        {
+         m_trade.PositionModify(ticket, newSL, originalTP);
         }
      }
   }
